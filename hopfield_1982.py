@@ -29,7 +29,14 @@ def _():
 def _(mo):
     mo.md(r"""
     # Hopfield (1982): storing a pattern in the connection matrix
+    """)
+    return
 
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Network set up
     The network has $N$ binary neurons, each either silent ($V_i = 0$) or
     firing ($V_i = 1$). Every pair of neurons is joined by a connection of
     strength $T_{ij}$, the input neuron $i$ receives from neuron $j$. A pattern
@@ -1121,20 +1128,44 @@ def _(np):
                     H[b] += (new[ch] - s[ch])[:, None] * Ts[mat[b], i[ch]]
                     S[b, i[ch]] = new[ch]
             Hl, Sl = H[live], S[live]
-            live = live[
-                (((Hl > U) & (Sl == 0)) | ((Hl < U) & (Sl == 1))).any(axis=1)
-            ]
+            live = live[(((Hl > U) & (Sl == 0)) | ((Hl < U) & (Sl == 1))).any(axis=1)]
             if not live.size:
                 break
         stable = np.ones(M * k, dtype=bool)
         stable[live] = False
         return S, stable
 
-    return (settle,)
+    def recall_errors(N, n, matrices, rng):
+        """Store n random memories in each of `matrices` random T's, start the
+        network exactly at every memory, and settle. Returns the error count of
+        every memory and how many networks never settled."""
+        # Matrices settled per batch, keeping the T and state stacks to ~16 MB
+        chunk = max(1, 4_000_000 // (N * max(N, n)))
+        errs, bad = [], 0
+        for start in range(0, matrices, chunk):
+            M = min(chunk, matrices - start)
+            P = rng.integers(0, 2, (M, n, N)).astype(np.int32)
+            X = 2 * P - 1
+            Ts = X.transpose(0, 2, 1) @ X
+            Ts[:, np.arange(N), np.arange(N)] = 0
+            final, ok = settle(Ts, P, rng)
+            errs.append((final != P.reshape(-1, N)).sum(axis=1))
+            bad += int((~ok).sum())
+        return np.concatenate(errs), bad
+
+    return (recall_errors,)
 
 
 @app.cell(hide_code=True)
-def _(fig2_matrices, fig2_neurons, fig2_patterns, fig2_run, mo, np, settle):
+def _(
+    fig2_matrices,
+    fig2_neurons,
+    fig2_patterns,
+    fig2_run,
+    mo,
+    np,
+    recall_errors,
+):
     fig2_N = fig2_neurons.value
     fig2_ns = [int(v) for v in fig2_patterns.value.replace(",", " ").split()]
     # Wait for the run button (always run when the notebook runs as a script)
@@ -1144,25 +1175,12 @@ def _(fig2_matrices, fig2_neurons, fig2_patterns, fig2_run, mo, np, settle):
     )
     fig2_rng = np.random.default_rng()
 
-    # Matrices settled per batch, keeping the stack of T's to ~16 MB
-    _chunk = max(1, 4_000_000 // fig2_N**2)
-
     # For each n: the error count of every memory, and how many never settled
     fig2_errors, fig2_unsettled = {}, {}
     for _n in fig2_ns:
-        _errs, _bad = [], 0
-        for _start in range(0, fig2_matrices.value, _chunk):
-            _M = min(_chunk, fig2_matrices.value - _start)
-            _P = fig2_rng.integers(0, 2, (_M, _n, fig2_N)).astype(np.int32)
-            _X = 2 * _P - 1
-            _Ts = _X.transpose(0, 2, 1) @ _X
-            _Ts[:, np.arange(fig2_N), np.arange(fig2_N)] = 0
-            # Start every network exactly at one of its own stored memories
-            _final, _ok = settle(_Ts, _P, fig2_rng)
-            _errs.append((_final != _P.reshape(-1, fig2_N)).sum(axis=1))
-            _bad += int((~_ok).sum())
-        fig2_errors[_n] = np.concatenate(_errs)
-        fig2_unsettled[_n] = _bad
+        fig2_errors[_n], fig2_unsettled[_n] = recall_errors(
+            fig2_N, _n, fig2_matrices.value, fig2_rng
+        )
     return fig2_N, fig2_errors, fig2_unsettled
 
 
@@ -1276,6 +1294,142 @@ def _(POS, alt, fig2_N, fig2_errors, fig2_unsettled, math, mo, np, pd):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    ## Capacity: how many memories survive
+
+    The same test as Fig. 2, swept over the number of stored memories $n$
+    (at $N = 100$: every value from 1 to 30, then 35–50 in fives; scaled in
+    proportion for other $N$), using the $N$ and the number of matrices set
+    above. The y-axis is the mean number of the $n$ stored memories per matrix
+    that stay within each error threshold.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    cap_run = mo.ui.run_button(label="Run capacity sweep")
+    cap_run
+    return (cap_run,)
+
+
+@app.cell(hide_code=True)
+def _(cap_run, fig2_matrices, fig2_neurons, mo, np, recall_errors):
+    # Same points at any N: at N = 100, n = 1..30 then 35..50 in fives; scaled with N
+    cap_ns = sorted(
+        {
+            max(1, round(_k * fig2_neurons.value / 100))
+            for _k in [*range(1, 31), *range(35, 51, 5)]
+        }
+    )
+    mo.stop(
+        not (cap_run.value or mo.app_meta().mode == "script"),
+        mo.md("*Press **Run capacity sweep** to compute the curve.*"),
+    )
+    _rng = np.random.default_rng()
+    cap_errors = {
+        _n: recall_errors(fig2_neurons.value, _n, fig2_matrices.value, _rng)[0]
+        for _n in mo.status.progress_bar(cap_ns, title="Capacity sweep")
+    }
+    return (cap_errors,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    # Each threshold counts a memory as stable with fewer than k errors
+    cap_thresholds = {
+        "0 errors": 1,
+        "< 5 errors": 5,
+        "< 10 errors": 10,
+        "< 20 errors": 20,
+        "< 50 errors": 50,
+    }
+    # Shown above the chart by the chart cell; toggling only redraws, never resimulates
+    cap_shown = mo.ui.array(
+        [mo.ui.checkbox(value=True, label=_label) for _label in cap_thresholds]
+    )
+    return cap_shown, cap_thresholds
+
+
+@app.cell(hide_code=True)
+def _(
+    MUTED,
+    NEG,
+    SERIES,
+    alt,
+    cap_errors,
+    cap_shown,
+    cap_thresholds,
+    fig2_neurons,
+    mo,
+    np,
+    pd,
+):
+    _shown = [_l for _l, _on in zip(cap_thresholds, cap_shown.value) if _on]
+    # recall_errors returns memories grouped by matrix, so each row of the reshape is one matrix
+    _df = pd.DataFrame(
+        [
+            {"n": _n, "threshold": _label, "stable": int(_s)}
+            for _label in _shown
+            for _n, _e in cap_errors.items()
+            for _s in (_e.reshape(-1, _n) < cap_thresholds[_label]).sum(axis=1)
+        ],
+        columns=["n", "threshold", "stable"],
+    )
+    # Jitter by up to ±0.3 in both directions so stacked integer counts read as density
+    _jit = np.random.default_rng()
+    _df["n_j"] = _df["n"] + _jit.uniform(-0.3, 0.3, len(_df))
+    _df["stable_j"] = _df["stable"] + _jit.uniform(-0.3, 0.3, len(_df))
+    _color = alt.Color(
+        "threshold:N",
+        sort=list(cap_thresholds),
+        scale=alt.Scale(domain=list(cap_thresholds), range=SERIES[: len(cap_thresholds)]),
+        title="stable with",
+    )
+    _base = alt.Chart(_df).encode(x=alt.X("n:Q", title="stored memories n"), color=_color)
+    # Drag to pan, scroll to zoom, double-click to reset
+    _zoom = alt.selection_interval(bind="scales")
+    _layers = [
+        _base.mark_circle(size=14, opacity=0.15)
+        .encode(
+            x=alt.X("n_j:Q", title="stored memories n"),
+            y=alt.Y("stable_j:Q", title="stable memories per matrix"),
+            tooltip=["threshold:N", "n:Q", "stable:Q"],
+        )
+        .add_params(_zoom),
+        _base.mark_errorbar(extent="ci").encode(y="stable:Q"),
+        _base.mark_line().encode(y="mean(stable):Q"),
+    ]
+    if len(_shown) == 1:
+        _means = _df.groupby("n")["stable"].mean()
+        _peak = pd.DataFrame({"n": [_means.idxmax()], "mean": [_means.max()]})
+        _best = _df.loc[[_df["stable"].idxmax()]]
+        _layers += [
+            # Vertical rule at the n with the highest mean, horizontal rule at y = that n
+            alt.Chart(_peak)
+            .mark_rule(color=MUTED, strokeDash=[4, 4])
+            .encode(x="n:Q", tooltip=["n:Q", alt.Tooltip("mean:Q", format=".2f")]),
+            alt.Chart(_peak)
+            .mark_rule(color=MUTED, strokeDash=[4, 4])
+            .encode(y="n:Q", tooltip=["n:Q"]),
+            # Red ring around the single matrix with the most stable memories
+            alt.Chart(_best)
+            .mark_point(shape="circle", size=180, filled=False, strokeWidth=2, color=NEG)
+            .encode(x="n_j:Q", y="stable_j:Q", tooltip=["threshold:N", "n:Q", "stable:Q"]),
+        ]
+    mo.vstack(
+        [
+            mo.hstack(list(cap_shown), justify="start", gap=1.5),
+            alt.layer(*_layers).properties(
+                width="container", height=320, title=f"N = {fig2_neurons.value}"
+            ),
+        ]
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## An error in a Nobel Prize-winning article
 
     Eq. 10 predicts that 40% of memories will be stable states (given N=100 and n=10). Their simulations (and ours) show 60%. Why is that?
@@ -1339,12 +1493,7 @@ def _(
     | Real memories (a memory's {counter_N} bits together) | **{(counter_real == 0).mean():.2f}** | {counter_real.var():.2f} |
     | Synthetic memories (each bit from a different memory) | **{(counter_synth == 0).mean():.2f}** | {counter_synth.var():.2f} |
     | Independent bits: $(1 - p)^N$ with measured $p = {counter_p_bit:.4f}$ | {(1 - counter_p_bit) ** counter_N:.2f} | {_binom_var:.2f} |
-    | Eq. 10: $(1 - P)^N$ with $P = {_p_eq10:.4f}$ | {(1 - _p_eq10) ** counter_N:.2f} | |
-
-    Both kinds of memory have the same average of {counter_real.mean():.2f} unstable bits.
-    In real memories the errors clump onto memories with close neighbours, so more
-    memories come out perfect. Synthetic memories break up those neighbourhoods, and
-    Eq. 10's number comes back.
+    | Eq. 10: $(1 - P)^N$ with $P = {_p_eq10:.4f}$ | {(1 - _p_eq10) ** counter_N:.2f} |
     """
     )
 
@@ -1431,6 +1580,11 @@ def _(
         title="Real memories have more zeros and a longer tail",
     )
     mo.hstack([_chart, _table], justify="start", align="center", gap=2)
+    return
+
+
+@app.cell
+def _():
     return
 
 
