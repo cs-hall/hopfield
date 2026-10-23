@@ -757,7 +757,15 @@ def _(MUTED, N, P, POS, SERIES, T, alt, history, mo, np, pd):
     energy_chart = (
         alt.Chart(energy_df)
         .mark_line(strokeWidth=2, interpolate="step-after", color=POS)
-        .encode(x=_x, y=alt.Y("E:Q", title="energy E", scale=alt.Scale(zero=False)))
+        .encode(
+            x=_x,
+            y=alt.Y(
+                "E:Q",
+                title="energy E",
+                scale=alt.Scale(zero=False),
+                axis=alt.Axis(format="d", tickMinStep=1),
+            ),
+        )
         + alt.Chart(energy_df)
         .mark_point(filled=True, size=60, opacity=0)
         .encode(
@@ -974,7 +982,12 @@ def _(
         .mark_line(strokeWidth=2, interpolate="step-after", color=POS)
         .encode(
             x=_x,
-            y=alt.Y("E:Q", title="energy E", scale=alt.Scale(zero=False)),
+            y=alt.Y(
+                "E:Q",
+                title="energy E",
+                scale=alt.Scale(zero=False),
+                axis=alt.Axis(format="d", tickMinStep=1),
+            ),
             tooltip=["update:Q", alt.Tooltip("time:Q", format=".2f"), "E:Q"],
         )
         .properties(width=320, height=200, title="Energy")
@@ -1066,17 +1079,16 @@ def _(mo):
     fig2_matrices = mo.ui.number(
         start=1, stop=500, step=1, value=30, label="Random matrices per n"
     )
-    fig2_resample = mo.ui.button(
-        label="New sample", value=0, on_click=lambda v: v + 1
-    )
+    # Fig. 2 only computes on request; each run draws a fresh random sample
+    fig2_run = mo.ui.run_button(label="Run Fig. 2 simulation")
     mo.hstack(
-        [fig2_neurons, fig2_patterns, fig2_matrices, fig2_resample],
+        [fig2_neurons, fig2_patterns, fig2_matrices, fig2_run],
         justify="start",
         align="end",
         gap=1.5,
         wrap=True,
     )
-    return fig2_matrices, fig2_neurons, fig2_patterns, fig2_resample
+    return fig2_matrices, fig2_neurons, fig2_patterns, fig2_run
 
 
 @app.cell(hide_code=True)
@@ -1120,10 +1132,15 @@ def _(np):
 
 
 @app.cell(hide_code=True)
-def _(fig2_matrices, fig2_neurons, fig2_patterns, fig2_resample, np, settle):
+def _(fig2_matrices, fig2_neurons, fig2_patterns, fig2_run, mo, np, settle):
     fig2_N = fig2_neurons.value
     fig2_ns = [int(v) for v in fig2_patterns.value.replace(",", " ").split()]
-    fig2_rng = np.random.default_rng(1982 + fig2_resample.value)
+    # Wait for the run button (always run when the notebook runs as a script)
+    mo.stop(
+        not (fig2_run.value or mo.app_meta().mode == "script"),
+        mo.md("*Press **Run Fig. 2 simulation** to compute the histograms.*"),
+    )
+    fig2_rng = np.random.default_rng()
 
     # Matrices settled per batch, keeping the stack of T's to ~16 MB
     _chunk = max(1, 4_000_000 // fig2_N**2)
