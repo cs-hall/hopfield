@@ -1,130 +1,242 @@
-# Simulations and computations in Shepard (1987)
+# Simulations in Hopfield (1982)
 
-Source: Shepard, R. N. (1987). Toward a universal law of generalization for
-psychological science. *Science*, 237(4820), 1317–1323.
+Source: Hopfield, J. J. (1982). Neural networks and physical systems with
+emergent collective computational abilities. *PNAS*, 79(8), 2554–2558.
 
-The paper is mostly theoretical. Its "simulations" are numerical integrations,
-a Monte Carlo study, and nonmetric MDS fits to published data. Each item below
-lists what was computed, the figure or equation it belongs to, and what we would
-need to reproduce it.
+The paper has one data figure (Fig. 2). Most results are Monte Carlo numbers
+reported in the text. Each item below gives what was simulated, where it
+appears, what was reported, and how to reproduce it.
 
-## Core model (used by S3–S6)
+## Core model (used by every item)
 
-- Stimulus at the origin **0** turns out to be consequential. The consequential
-  region is convex, centrally symmetric, of unknown size *s* with prior p(s)
-  (mean μ), and every location is equally likely.
-- Generalization to x (Eq. 2): g(x) = ∫ p(s) · m(s,x)/m(s) ds, where m(s,x) is
-  the overlap of the regions centred on 0 and on x.
-- 1-D case (Eqs. 5–8): g(d) = ∫_d^∞ p(s)(s − d)/s ds; g′ < 0, g″ = p(d)/d ≥ 0.
-- Erlang prior (Eq. 9): p(s) = (2/μ)² s e^(−2s/μ) gives g(d) = exp(−2d/μ) (Eq. 10).
+- **Units:** N binary neurons, V_i ∈ {0, 1}. Thresholds U_i = 0 unless stated.
+- **Dynamics (Eq. 1):** asynchronous and random. Each neuron is picked at mean
+  rate W and set to V_i = 1 if Σ_j T_ij V_j > U_i, else 0. One unit of time
+  1/W is about N single-neuron updates (one "sweep").
+- **Storage (Eq. 2):** T_ij = Σ_s (2V_i^s − 1)(2V_j^s − 1), with T_ii = 0.
+- **Energy (Eqs. 7–8):** E = −½ Σ_{i≠j} T_ij V_i V_j, and
+  ΔE = −ΔV_i Σ_j T_ij V_j ≤ 0 when T is symmetric.
+- **Memories** are random binary vectors with p(1) = ½. The complement of each
+  memory is also stable, so n memories give 2n nominal attractors.
+- **Stopping rule:** stop when a full pass finds no neuron that wants to flip,
+  or at a cap of about 50 sweeps, and label the run "not converged".
+
+One vectorised numpy engine (many trials at once, random update order, optional
+clamped bits, optional thresholds) covers all the items below.
 
 ---
 
-## S1. Monte Carlo recovery of metric distances from rank orders
+## S1. Energy descent and stable states (Eqs. 7–8)
 
-- **Where:** p. 1318, text (ref. 19); no figure.
-- **What:** Random configurations of n points in 2-D. Run nonmetric MDS on only
-  the rank order of the n(n−1)/2 distances, then correlate the recovered
-  distances with the true ones.
-- **Reported:** n = 10 gives a mean r of 0.998; n = 45 gives r > 0.999999.
-- **To reproduce:** `sklearn.manifold.MDS(metric=False)`, many random trials,
-  sweep n. Plot mean r (or 1 − r) against n.
+- **Where:** p. 2556, "The model has stable limit points."
+- **What:** With symmetric T, every asynchronous update leaves E the same or
+  lowers it, so the run must end at a local minimum. The paper links this to
+  Ising models and spin glasses.
+- **To reproduce:** Trace E(t) for several runs on a Hebbian T and on a random
+  symmetric T, and check that ΔE ≤ 0 at every step. A second view: enumerate
+  every state for small N (≈ 16) and count the local minima.
 
-## S2. Nonmetric MDS gives the gradient of generalization (Fig. 1)
+## S2. Random asymmetric T_ij (N = 30, N = 100)
 
-- **Where:** Fig. 1, panels A–L, with 12 data sets: sizes, lightness and
-  saturation, positions, spectral hues (pigeon and human), consonant and vowel
-  phonemes, Morse code, shapes, and others.
-- **What:** Convert confusion probabilities p_ij into generalization measures
-  g_ij = [(p_ij·p_ji)/(p_ii·p_jj)]^½. Run nonmetric MDS, plot g_ij against the
-  fitted distance d_ij, and fit exp(−k·d) using only the slope parameter.
-- **Data:** Most original matrices are not in the paper. Data we can get:
-  - Ekman (1954) colour similarity (14 hues), widely reproduced.
-  - Rothkopf (1957) Morse code confusions (36×36), widely available.
-  - Miller & Nicely (1955) consonant confusions, available.
-  - Peterson & Barney (1952) vowels, available as raw formants, not confusions.
-- **Side results in the text:**
-  - Hue: the 1-D continuum bends into a circle in 2-D (Newton's colour circle).
-  - Pitch: octave generalization makes the line a helix in 3-D.
-  - Orientation of near-symmetric shapes: a Möbius band in 4-D.
-  These could be shown as synthetic demos: generate g from the curved geometry,
-  then run MDS and see that it recovers the geometry.
+- **Where:** p. 2556, Eq. 9.
+- **What:** T_ij ~ U(−1, 1) with no symmetry. Start from random states.
+- **Reported (N = 30):**
+  - Runs never wander ergodically. They settle within about 4/W.
+  - In 50 trials on one matrix, every run ends in one of 2–3 end states.
+  - Simple cycles A → B → A → B appear now and then.
+  - Some runs wander chaotically within a short Hamming distance of one state.
+    The entropy measure ln M = −Σ p_i ln p_i (Eq. 9) gives M ≈ 25.
+  - N = 100 behaves the same way qualitatively.
+- **To reproduce:** For each run, record the end state and how long it took.
+  Classify the outcome as fixed point, cycle, or local wandering. For wandering
+  runs, collect visit frequencies over a long window and compute M. An optional
+  slider for T = T_sym + λ·T_antisym shows the "effective temperature" argument
+  on p. 2556.
 
-## S3. Overlap geometry of consequential regions (Fig. 2)
+## S3. Capacity: error distribution of recalled memories (Fig. 2)
 
-- **Where:** Fig. 2A and 2B.
+- **Where:** Fig. 2, and the p. 2556 text "About 0.15 N states…".
+- **What:** N = 100 with n = 5, 10, 15 random memories. Start at each stored
+  memory, run until stationary, and histogram the Hamming distance to the
+  original. Average over memories and over many matrices.
+- **Bins:** 0, 1, …, 9, then 10–19, 20–29, 30–39, 40–49, and > 49.
+- **Reported:**
+  - n = 5: almost always exact.
+  - n = 10: about 0.6 of states have zero errors.
+  - n = 15: about half end with fewer than 5 errors. The rest land 20–40 bits
+    away.
+- **Also:** Repeat with N = 30 to show that the critical n scales with N. Sweep
+  n/N and plot the fraction recalled with fewer than 5 errors. The curve should
+  drop near n ≈ 0.15 N.
+- **Note:** The y-axis in Fig. 2 is not linear, so match the panels by eye.
+
+## S4. Signal-to-noise theory (Eqs. 3, 4, 10)
+
+- **Where:** p. 2556.
+- **What:** The effective field on a bit of a stored memory has mean ±N/2 and
+  Gaussian crosstalk noise σ = √((n − 1)N/2). The single-bit error probability
+  is P = Φ̄((N/2)/σ).
+- **Reported:** For n = 10, N = 100, P = 0.0091, and P(no errors in 100 bits)
+  ≈ e^(−0.91) ≈ 0.40. The simulation gave 0.6.
+- **To reproduce:**
+  - Plot the analytic P against n.
+  - Overlay the measured one-step instability: the fraction of bits whose field
+    has the wrong sign at the memory.
+  - Overlay the measured final zero-error fraction from S3.
+  - The gap between 0.40 and 0.6 is worth showing. The theory counts bits that
+    are unstable at the start. The simulation counts states that are still
+    exact after the network has relaxed.
+
+## S5. ±1 coding / thresholds double capacity
+
+- **Where:** p. 2557, top of the left column.
+- **What:** In 0/1 coding the field is ½ Σ T_ij μ_j + ½ Σ T_ij, and the second
+  term adds noise. Choosing thresholds U_i = ½ Σ_j T_ij, which is the same as
+  using μ = ±1 states with threshold 0, removes that term. At a fixed error
+  rate this doubles capacity.
+- **To reproduce:** Rerun the S3 sweep in both codings and overlay the two
+  capacity curves.
+
+## S6. Basins of attraction and content-addressable recall (N = 30, n = 5)
+
+- **Where:** p. 2557.
+- **S6a, random starts:**
+  - Reported: about 85% of runs end in assigned memories (10 including
+    complements), 10% end in spurious stable states, and 5% end in states very
+    near a memory.
+  - Reported: the 10 states differ in likelihood by about a factor of 20.
+  - To reproduce: tabulate the end-state categories and the frequency of each
+    memory.
+- **S6b, distance-dependent recall:**
+  - Corrupt a memory by d random flips. Measure P(end state is the nearest
+    memory) as a function of d.
+  - Reported: above 0.9 for d ≤ 5, falling smoothly to about 0.2 (2× chance)
+    at d = 12.
+- **S6c, recall from a subpart (intro example):** Give part of a memory, either
+  with the rest random or with the known bits clamped. The paper suggests
+  clamping for hardware. Compare recall rates with and without clamping as the
+  known fraction grows.
+
+## S7. Clipped synapses: T_ij → sign(T_ij)
+
+- **Where:** p. 2557.
+- **What:** Replace T with its sign.
+- **Reported:**
+  - At N = 100, clipped storage with n = 9 has about the same error level as
+    standard storage with n = 12.
+  - Theory: the signal-to-noise ratio drops by √(2/π), so capacity drops by a
+    factor of 2/π.
+  - Shannon information stored peaks near n = 13 at about N²/8 bits. This is
+    for the ±1 algorithm with clipped T.
+- **To reproduce:**
+  - Overlay the S3-style curves for clipped and standard T.
+  - Compute information as n·N·(1 − H₂(p_err)) from the measured per-bit error
+    rate and plot it against n to find the peak.
+
+## S8. Overload and forgetting through bounded synapses
+
+- **Where:** p. 2557.
 - **What:**
-  - 2A: the set of centres c of regions that contain both 0 and x is the
-    intersection of the two regions centred on 0 and on x.
-  - 2B: for a non-convex but centrally symmetric region, trace the locus of
-    centres that keep a fixed overlap (about 20%) with the region at 0. This
-    locus comes out close to a Euclidean ellipse.
-- **To reproduce:** Rasterise the shapes on a grid, compute overlap areas for
-  displacement vectors, and draw the iso-overlap contour. An interactive version
-  would let the user pick the shape and the overlap level.
+  - Unbounded T: storing past capacity makes every memory irretrievable.
+  - Bounded T_ij ∈ {0, ±1, ±2, ±3}, with increments that saturate: only recent
+    memories stay stable, so the network forgets gracefully. The paper calls
+    ±3 a suitable depth for N = 100.
+- **To reproduce:** Store a long stream of memories one at a time. After each
+  one, test the stability of every earlier memory. Plot recall against memory
+  age for both schemes, with a slider for the bound depth.
 
-## S4. Robustness of g(d) to the size prior p(s) (Fig. 3)
+## S9. One-way connections and fail-soft behaviour
 
-- **Where:** Fig. 3A–F, Eq. 6.
-- **What:** Integrate Eq. 6 numerically for six priors, each with mean μ = 1,
-  and overlay exp(−d/μ)-type decay:
+- **Where:** p. 2557.
+- **What:** For each pair, keep only one direction: if T_ij ≠ 0 then T_ji = 0.
+- **Reported:**
+  - Errors increase, but the network still forms stable minima.
+  - Theory: the signal-to-noise ratio drops by 1/√2, and the simulations agree.
+  - As more synapses fail, the network degrades slowly ("soft" failure).
+- **To reproduce:**
+  - Compare capacity curves for full T and one-way T.
+  - Sweep the fraction of randomly deleted synapses, 0 → 0.9, and plot recall.
+    The curve should fall smoothly rather than collapse.
 
-  | Panel | p(s) | Closed form shown in figure |
-  |---|---|---|
-  | A | rectangular on [0, 2μ] | 1 − d/2μ + (d/2μ) log(d/2μ), d ≤ 2μ |
-  | B | triangular, decreasing, on [0, 3μ] | 1 − (d/3μ)² + 2(d/3μ)² log(d/3μ)… |
-  | C | exponential | exp(−d/μ) − (d/μ) Ei(d/μ) |
-  | D | triangular, increasing, on [0, 3μ/2] | 1 − 2(2d/3μ) + (2d/3μ)² |
-  | E | parabolic on [0, 2μ] | 1 − 3(d/2μ) + 3(d/2μ)² − (d/2μ)³ |
-  | F | Erlang (shape 2) | exp(−2d/μ), exact |
+## S10. Similar memories merge
 
-- **To reproduce:** Use `scipy.integrate.quad`, with a choice-of-prior widget
-  and a slider for μ. Check the numerical curves against the closed forms in the
-  figure.
+- **Where:** p. 2557.
+- **What:** N = 100, n = 8. Seven memories are random. The eighth is placed a
+  Hamming distance h = 30, 20, or 10 from one of the seven. Random pairs are
+  normally 50 ± 5 apart.
+- **Reported:**
+  - h = 30: both memories usually stable.
+  - h = 20: the minima are distinct but displaced.
+  - h = 10: the minima are often fused.
+- **To reproduce:** Start at each of the two close memories. Record where each
+  run ends and how far it is from each memory. Sweep h continuously, 0–50.
 
-## S5. Bayesian / max-entropy derivation of the Erlang prior
+## S11. Familiarity through the 00…0 state (thresholds)
 
-- **Where:** pp. 1320–1321, Eqs. 9–10.
-- **What:** The max-entropy prior q(s) with a fixed mean is exponential. Bayes
-  with the size-principle likelihood m(s) = s gives
-  p(s) ∝ s·q(s), which is Erlang(2), and that yields an exactly exponential g.
-- **To reproduce:** Show q(s) → p(s) → g(d) step by step. Optional Monte Carlo:
-  sample regions from q, keep the ones that contain 0, and estimate how often
-  they contain d.
+- **Where:** p. 2557.
+- **What:** The all-zero state is always stable. With U = 0 it has much higher
+  energy than the stored memories and is rarely reached. A uniform threshold
+  U > 0 makes 00…0 a common attractor for unfamiliar inputs, which amounts to
+  saying "not recognised".
+- **To reproduce:** Use two kinds of starting state: noisy memories (familiar)
+  and random states (unfamiliar). Use a slider for U. Plot P(end at 00…0) for
+  each kind and the resulting ROC.
 
-## S6. Equal-generalization contours in 2-D (Fig. 4)
+## S12. Familiarity under heavy overload (N = 100, n = 500)
 
-- **Where:** Fig. 4A–D. Contours for g = 0.1 … 0.9 in one quadrant, with the
-  L2 circle and L1 diamond drawn for reference.
-  - **A:** square region, one shared size s (correlated dimensions), rectangular
-    p(s). Contours are mostly circular (L2-like).
-  - **B:** circular region, rectangular p(s). Contours are exactly circular (L2).
-  - **C:** rectangular region with independent sizes s and t, both with
-    rectangular priors. Contours are rhombic (L1-like).
-  - **D:** rectangular region with independent Erlang s and t. Then
-    g = exp(−2(|x|+|y|)/μ), which is exactly an L1 rhombus with exponential
-    decay.
-- **To reproduce:** Evaluate the 2-D Eq. 2 integral on a grid. Where it
-  factorises (C, D) it is the product of the 1-D g values. A and B need a 1-D
-  integral over s of the overlap fraction. Draw contours with Altair (a
-  rect-heatmap plus contour lines precomputed with skimage or matplotlib).
+- **Where:** p. 2558.
+- **What:** With 25× overload, no stored memory is stable.
+- **Reported:** The initial processing rate tells familiar from unfamiliar
+  states most of the time. The rate is the number of neuron flips in time
+  1/(2W), about N/2 updates, and it is faster for unfamiliar states.
+- **To reproduce:**
+  - Start from stored memories and from random states.
+  - Count flips over the first N/2 updates.
+  - Plot both distributions and the d′ or AUC.
 
-## S7. Proposed extensions (text only, p. 1322)
+## S13. Completion from correlated memories (Eqs. 11–12)
 
-The paper sketches these but does not carry them out. Each could be an
-exploratory demo:
+- **Where:** p. 2558.
+- **What:**
+  - Store many correlated memories, which gives a mean correlation C_ij ≠ 0.
+  - Then store a new partial state X on only k < N neurons (Eq. 11).
+  - Recall fills in the missing bits from the sign of Σ_{j≤k} C_ij X_j
+    (Eq. 12). This is a form of generalization.
+  - The paper says this works best when the correlated set is stored weakly
+    and X is stored at normal strength.
+- **To reproduce:** The paper does not specify this setup. One design:
+  - Generate memories from a few prototypes plus noise.
+  - Store them with a weight ε < 1.
+  - Store X on its first k bits.
+  - Measure how well the remaining bits match the class prototype, as a
+    function of ε and k.
 
-1. **Multiple trials / discrimination learning.** Update the posterior over
-   candidate regions from positive and negative examples. This leads to
-   Tenenbaum & Griffiths (2001).
-2. **Soft (Gaussian) consequence** instead of sharp region boundaries. The paper
-   says this still gives an exponential g and the L1/L2 metrics.
-3. **Negatively correlated extents** along the dimensions. This gives
-   star-shaped contours (Minkowski r < 1) that violate the triangle inequality.
-4. **Discrimination reaction time** inversely related to distance, through a
-   race of candidate-region "events".
-5. **Noise or delayed tests** move g toward a Gaussian (inflected) shape and the
-   contours toward ellipses.
+## S14. Time sequences from asymmetric terms (Eq. 13)
+
+- **Where:** p. 2558.
+- **What:** Add ΔT_ij = A Σ_s (2V_i^(s+1) − 1)(2V_j^s − 1). This is
+  nonsymmetric, so a minimum can become metastable and hand the state on to
+  the next memory in the sequence.
+- **Reported:** With A tuned, the network stays near V_s for a while and then
+  moves to V_(s+1). Sequences longer than 4 states could not be produced, and
+  even short ones were not followed faithfully.
+- **To reproduce:** Plot the overlap of the state with each V_s over time,
+  with sliders for A and sequence length. Count how many transitions are
+  followed in order. Expect failure beyond about 4 states, because the dynamics
+  have no delay term.
+
+## S15. Nonlinear choice vs a linear associator
+
+- **Where:** p. 2555.
+- **What:** A linear net given the mixed stimulus 0.6 S₁ + 0.4 S₂ outputs the
+  mixture 0.6 O₁ + 0.4 O₂. The Hopfield net "makes a choice" and returns S₁.
+- **To reproduce:** Sweep the mixing weight from 0 to 1. Plot the overlap with
+  S₁ and with S₂ for the linear readout T·x and for the attractor end state.
+  The linear curve should be a ramp and the attractor curve a step near 0.5.
+
+Fig. 1 (the firing-rate curve and its step and linear approximations) is
+conceptual. It needs no simulation, but it could be drawn as a static
+illustration.
 
 ---
 
@@ -132,10 +244,12 @@ exploratory demo:
 
 | Priority | Item | Why |
 |---|---|---|
-| ★★★ | S4 (Fig. 3) | Central result, cheap, and works well with interactive widgets |
-| ★★★ | S6 (Fig. 4) | The L1/L2 metric story, a striking contour plot |
-| ★★☆ | S5 | Explains *why* the curve is exponential; ties S4 together |
-| ★★☆ | S1 | Short Monte Carlo that gives the MDS step credibility |
-| ★★☆ | S3 (Fig. 2B) | A good geometry visual, more fiddly to build |
-| ★☆☆ | S2 (Fig. 1) | Needs external confusion data (Ekman, Rothkopf, and Miller–Nicely are feasible) |
-| ★☆☆ | S7 | Open-ended extensions |
+| ★★★ | S3 (Fig. 2) + S4 | The one data figure and its theory; the capacity result is ≈ 0.15 N |
+| ★★★ | S6 | Content-addressable memory and basins, the paper's headline claim |
+| ★★★ | S1 | Lyapunov/energy argument; short and builds intuition |
+| ★★☆ | S5, S7, S9 | Robustness variants; they reuse the S3 sweep code |
+| ★★☆ | S15 | One-panel contrast that motivates the nonlinearity |
+| ★★☆ | S10, S11, S12 | Categorization and familiarity; cheap to run |
+| ★☆☆ | S2 | Asymmetric dynamics; classifying cycles and wandering is fiddly |
+| ★☆☆ | S8 | Forgetting with bounded synapses; needs long storage streams |
+| ★☆☆ | S13, S14 | Loosely specified, and S14 is a reported partial failure |
