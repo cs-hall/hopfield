@@ -11,7 +11,7 @@
 import marimo
 
 __generated_with = "0.25.2"
-app = marimo.App(width="medium")
+app = marimo.App(width="full")
 
 
 @app.cell
@@ -36,9 +36,92 @@ def _(mo):
     of activity is stored by adding to $T$ (Eq. 2):
 
     $$T_{ij} = \sum_s (2V_i^s - 1)(2V_j^s - 1), \qquad T_{ii} = 0.$$
-
-    Pick a pattern below and press **Store** to add it to $T$.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    pair_i = mo.ui.switch(value=True, label="neuron i firing")
+    pair_j = mo.ui.switch(value=False, label="neuron j firing")
+    return pair_i, pair_j
+
+
+@app.cell(hide_code=True)
+def _(INK, MID, NEG, POS, alt, mo, pair_i, pair_j, pd, signed):
+    # One storage step for a single pair: the increment Eq. 2 adds to T_ij
+    _vi, _vj = int(pair_i.value), int(pair_j.value)
+    _xi, _xj = 2 * _vi - 1, 2 * _vj - 1
+    pair_dT = _xi * _xj
+
+    _nodes = pd.DataFrame(
+        {
+            "x": [0, 1],
+            "name": ["i", "j"],
+            "state": ["firing (1)" if v else "silent (0)" for v in (_vi, _vj)],
+            "ink": ["white" if v else INK for v in (_vi, _vj)],
+        }
+    )
+    _edge = pd.DataFrame(
+        {"x": [0], "x2": [1], "label": [f"\u0394T = {signed(pair_dT)}"]}
+    )
+    _scale = alt.Scale(domain=[-0.35, 1.35])
+    _y = alt.value(30)
+    pair_chart = (
+        alt.layer(
+            alt.Chart(_edge)
+            .mark_rule(strokeWidth=5, color=POS if pair_dT > 0 else NEG)
+            .encode(x=alt.X("x:Q", scale=_scale, axis=None), x2="x2:Q", y=_y),
+            alt.Chart(_edge)
+            .mark_text(dy=-16, fontSize=13, fontWeight="bold", color=INK)
+            .encode(x=alt.value(130), y=_y, text="label:N"),
+            alt.Chart(_nodes)
+            .mark_circle(size=900, opacity=1, stroke=INK, strokeWidth=1)
+            .encode(
+                x=alt.X("x:Q", scale=_scale),
+                y=_y,
+                fill=alt.Fill(
+                    "state:N",
+                    scale=alt.Scale(
+                        domain=["firing (1)", "silent (0)"], range=[POS, MID]
+                    ),
+                    legend=None,
+                ),
+            ),
+            alt.Chart(_nodes)
+            .mark_text(fontSize=14, fontWeight="bold")
+            .encode(
+                x=alt.X("x:Q", scale=_scale),
+                y=_y,
+                text="name:N",
+                color=alt.Color("ink:N", scale=None),
+            ),
+        )
+        .properties(width=260, height=60)
+        .configure_view(stroke=None)
+    )
+
+    _meaning = (
+        "Same state, so the connection is **strengthened** (excitatory): each "
+        "neuron pushes the other toward the state they share."
+        if pair_dT > 0
+        else "Opposite states, so the connection is **weakened** (inhibitory): "
+        "each neuron pushes the other toward the opposite state."
+    )
+    mo.hstack(
+        [
+            mo.vstack([pair_i, pair_j], gap=0.5),
+            pair_chart,
+            mo.md(
+                f"$\\Delta T_{{ij}} = (2V_i - 1)(2V_j - 1) = ({_xi:+d})({_xj:+d}) = {pair_dT:+d}$"
+                f"\n\n{_meaning}"
+            ),
+        ],
+        justify="start",
+        align="center",
+        gap=2,
+        wrap=True,
+    )
     return
 
 
@@ -365,7 +448,7 @@ def _(INK, MID, MUTED, NEG, POS, alt, np, pd):
             .configure_view(stroke=None)
         )
 
-    return matrix_chart, network_chart, rows_chart
+    return matrix_chart, network_chart, rows_chart, signed
 
 
 @app.cell
@@ -387,7 +470,11 @@ def _(mo):
     mo.md(r"""
     ## The network
 
-    Tick the neurons that should fire, or draw a random pattern, then store it.
+    Tick the neurons that should fire, or get a random pattern.
+
+    Pick a pattern below and press **Store** to add it to $T$.
+
+    The network updates one neuron at a time asynchronously. The basic unit of time is $\frac{1}{W}$ (the average number of steps it takes for a neuron to update again). We expect about N single-neuron updates to happen in that time.
     """)
     return
 
@@ -404,7 +491,9 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    random_button = mo.ui.button(label="Random pattern", value=0, on_click=lambda v: v + 1)
+    random_button = mo.ui.button(
+        label="Random pattern", value=0, on_click=lambda v: v + 1
+    )
     return (random_button,)
 
 
@@ -412,7 +501,10 @@ def _(mo):
 def _(N, mo, np, random_button):
     start = np.random.default_rng(1982 + random_button.value).integers(0, 2, N)
     neuron_boxes = mo.ui.array(
-        [mo.ui.checkbox(value=bool(b), label=str(k + 1)) for k, b in enumerate(start)]
+        [
+            mo.ui.checkbox(value=bool(b), label=str(k + 1))
+            for k, b in enumerate(start)
+        ]
     )
     return (neuron_boxes,)
 
@@ -730,13 +822,26 @@ def _(MUTED, N, P, POS, SERIES, T, alt, history, mo, np, pd):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    The amount of "energy" in the system is just the amount of disagreement between the current state and the stored weights. More disagreement (two neurons firing that want to inhibit each other) leads to higher energy. This metric can never go up (neurons always update in line with the connection weights).
+
+    But is a lower energy state always to a stored pattern?
+
+    The distance to a stored pattern is shown on the right. Here we see the distance sometimes goes down to 0, but sometimes finds a stable location elsewhere.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## Simulation
 
-    The same dynamics at a realistic size, with nothing drawn until the run
-    ends. $n$ random patterns are stored with Eq. 2. The network starts from
-    pattern 1 with some bits flipped and runs the asynchronous rule. The
-    traces show the energy and the Hamming distance to every stored pattern.
+    The same dynamics at a larger scale. $n$ random patterns are stored with Eq. 2. The network starts from
+    the first pattern with some bits flipped and runs the asynchronous rule. The
+    traces show the energy and the Hamming distance over time.
     Fig. 2 of the paper uses $N = 100$ with $n = 5, 10, 15$.
+
+    Note how variable the spread of the stored patterns and the final pattern "chosen" are across runs.
     """)
     return
 
@@ -1012,7 +1117,7 @@ def _(POS, alt, fig2_N, fig2_errors, fig2_unsettled, math, mo, np, pd):
     _half = fig2_N // 2
     fig2_bins = [(k, k, str(k)) for k in range(10)]
     fig2_bins += [
-        (lo, min(lo + 9, _half - 1), f"{lo}\u2013{min(lo + 9, _half - 1)}")
+        (lo, min(lo + 9, _half - 1), f"{lo}–{min(lo + 9, _half - 1)}")
         for lo in range(10, _half, 10)
     ]
     fig2_bins += [(_half, fig2_N, f">{_half - 1}")]
@@ -1026,7 +1131,7 @@ def _(POS, alt, fig2_N, fig2_errors, fig2_unsettled, math, mo, np, pd):
         p_bit = 0.5 * math.erfc((N / 2) / (sigma * np.sqrt(2)))
         return (1 - p_bit) ** N
 
-    _panels, _summary = [], []
+    _panels, _stats = [], {}
     for _n, _errs in fig2_errors.items():
         _df = pd.DataFrame(
             {
@@ -1068,24 +1173,210 @@ def _(POS, alt, fig2_N, fig2_errors, fig2_unsettled, math, mo, np, pd):
                     "count:Q",
                 ],
             )
-            .properties(width=480, height=120, title=f"n = {_n}, N = {fig2_N}")
+            .properties(width=440, height=120, title=f"n = {_n}, N = {fig2_N}")
         )
-        _summary.append(
-            f"| {_n} | {len(_errs)} | {(_errs == 0).mean():.2f} | {(_errs < 5).mean():.2f} "
-            f"| {_eq10_no_errors(_n, fig2_N):.2f} | {fig2_unsettled[_n]} |"
-        )
+        _stats[_n] = [
+            str(len(_errs)),
+            f"{(_errs == 0).mean():.2f}",
+            f"{(_errs < 5).mean():.2f}",
+            f"{_eq10_no_errors(_n, fig2_N):.2f}",
+            str(fig2_unsettled[_n]),
+        ]
 
-    mo.vstack(
+    # Transposed summary: one narrow column per n so it fits beside the panels
+    _rows = [
+        "memories tested",
+        "P(0 errors)",
+        "P(< 5 errors)",
+        "Eq. 10: P(all bits start stable)",
+        "never settled",
+    ]
+    _ns = list(_stats)
+    _table = (
+        "| | " + " | ".join(f"n = {_n}" for _n in _ns) + " |\n"
+        "|---|"
+        + "---:|" * len(_ns)
+        + "\n"
+        + "\n".join(
+            f"| {_label} | " + " | ".join(_stats[_n][_r] for _n in _ns) + " |"
+            for _r, _label in enumerate(_rows)
+        )
+    )
+
+    mo.hstack(
         [
             alt.vconcat(*_panels, spacing=12),
             mo.md(
-                "| n | memories | P(0 errors) | P(< 5 errors) | Eq. 10: P(all bits start stable) | never settled |\n"
-                "|---:|---:|---:|---:|---:|---:|\n"
-                + "\n".join(_summary)
+                _table
                 + "\n\nThe y-axis uses a square-root scale, which matches the spacing of the paper's ticks."
             ),
+        ],
+        justify="start",
+        align="center",
+        gap=2,
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## An error in a Nobel Prize-winning article
+
+    Eq. 10 predicts that 40% of memories will be stable states (given N=100 and n=10). Their simulations (and ours) show 60%. Why is that?
+
+    Each bit is unstable with probability 0.009 (from the paper). So if each bit is independent then 40% of memories should be stable.
+    However, each bit is not independent. The average error rate is 0.009 per bit, but that is stronger for memories that are very close to other memories. So if some memories have more errors than expected, others must have fewer (so the average still works out).
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(np):
+    # Counterexample: the same unstable-bit statistics, with and without each
+    # memory's neighbourhood. N = 100, n = 10 as in the paper's example.
+    _rng = np.random.default_rng(10)
+    counter_N, counter_n = 100, 10
+    _bad = []
+    for _ in range(2000):
+        _P = _rng.integers(0, 2, (counter_n, counter_N))
+        _T = (2 * _P - 1).T @ (2 * _P - 1)
+        np.fill_diagonal(_T, 0)
+        _H = _P @ _T  # input to every bit of every stored memory (T is symmetric)
+        _bad.append(((_H > 0) & (_P == 0)) | ((_H < 0) & (_P == 1)))
+    counter_unstable = np.concatenate(
+        _bad
+    )  # one row per memory, one column per bit
+    counter_p_bit = counter_unstable.mean()
+
+    # Real memories keep their own N bits together
+    counter_real = counter_unstable.sum(axis=1)
+    # Synthetic memories take each of their N bits from a different random memory
+    _flat = counter_unstable.ravel()
+    counter_synth = _flat[
+        _rng.integers(len(_flat), size=(len(counter_real), counter_N))
+    ].sum(axis=1)
+    return counter_N, counter_n, counter_p_bit, counter_real, counter_synth
+
+
+@app.cell(hide_code=True)
+def _(
+    MUTED,
+    SERIES,
+    alt,
+    counter_N,
+    counter_n,
+    counter_p_bit,
+    counter_real,
+    counter_synth,
+    math,
+    mo,
+    np,
+    pd,
+):
+    _sigma = np.sqrt((counter_n - 1) * counter_N / 2)
+    _p_eq10 = 0.5 * math.erfc((counter_N / 2) / (_sigma * np.sqrt(2)))
+    _binom_var = counter_N * counter_p_bit * (1 - counter_p_bit)
+
+    _table = mo.md(
+        f"""
+    | | P(no unstable bits) | variance of # unstable bits |
+    |---|---:|---:|
+    | Real memories (a memory's {counter_N} bits together) | **{(counter_real == 0).mean():.2f}** | {counter_real.var():.2f} |
+    | Synthetic memories (each bit from a different memory) | **{(counter_synth == 0).mean():.2f}** | {counter_synth.var():.2f} |
+    | Independent bits: $(1 - p)^N$ with measured $p = {counter_p_bit:.4f}$ | {(1 - counter_p_bit) ** counter_N:.2f} | {_binom_var:.2f} |
+    | Eq. 10: $(1 - P)^N$ with $P = {_p_eq10:.4f}$ | {(1 - _p_eq10) ** counter_N:.2f} | |
+
+    Both kinds of memory have the same average of {counter_real.mean():.2f} unstable bits.
+    In real memories the errors clump onto memories with close neighbours, so more
+    memories come out perfect. Synthetic memories break up those neighbourhoods, and
+    Eq. 10's number comes back.
+    """
+    )
+
+    _cap = 6  # counts of 6 or more share the last bar
+    _kinds = ["real", "synthetic"]
+    _counts_df = pd.DataFrame(
+        [
+            {
+                "unstable bits": k,
+                # Numeric x with a manual offset per group, so the mean lines can
+                # sit at fractional positions on the same axis
+                "x": k + (-0.18 if _kind == "real" else 0.18),
+                "memories": _kind,
+                "fraction": (np.minimum(_c, _cap) == k).mean(),
+            }
+            for _kind, _c in [("real", counter_real), ("synthetic", counter_synth)]
+            for k in range(_cap + 1)
         ]
     )
+    _means_df = pd.DataFrame(
+        {"memories": _kinds, "mean": [counter_real.mean(), counter_synth.mean()]}
+    )
+    _color = alt.Color(
+        "memories:N",
+        sort=_kinds,
+        scale=alt.Scale(domain=_kinds, range=SERIES[:2]),
+        legend=alt.Legend(title=None, orient="top"),
+    )
+    _x_scale = alt.Scale(domain=[-0.6, _cap + 0.6], nice=False)
+    _bars = (
+        alt.Chart(_counts_df)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, size=14)
+        .encode(
+            x=alt.X(
+                "x:Q",
+                scale=_x_scale,
+                title="unstable bits per memory",
+                axis=alt.Axis(
+                    values=list(range(_cap + 1)),
+                    labelExpr=f"datum.value == {_cap} ? '{_cap}+' : datum.value",
+                    grid=False,
+                ),
+            ),
+            y=alt.Y("fraction:Q", title="fraction of memories"),
+            color=_color,
+            tooltip=[
+                "memories:N",
+                "unstable bits:Q",
+                alt.Tooltip("fraction:Q", format=".3f"),
+            ],
+        )
+    )
+    # Mean of each group: real solid, synthetic dashed so both show when they coincide
+    _mean_lines = (
+        alt.Chart(_means_df)
+        .mark_rule(strokeWidth=2)
+        .encode(
+            x=alt.X("mean:Q", scale=_x_scale),
+            color=_color,
+            strokeDash=alt.StrokeDash(
+                "memories:N",
+                sort=_kinds,
+                scale=alt.Scale(domain=_kinds, range=[[1, 0], [6, 4]]),
+                legend=None,
+            ),
+            tooltip=[
+                "memories:N",
+                alt.Tooltip("mean:Q", format=".2f", title="mean"),
+            ],
+        )
+    )
+    _mean_label = (
+        alt.Chart(_means_df.head(1))
+        .mark_text(align="left", dx=6, dy=4, baseline="top", color=MUTED)
+        .encode(
+            x=alt.X("mean:Q", scale=_x_scale),
+            y=alt.value(0),
+            text=alt.value(f"mean = {counter_real.mean():.2f} (both)"),
+        )
+    )
+    _chart = (_bars + _mean_lines + _mean_label).properties(
+        width=360,
+        height=200,
+        title="Real memories have more zeros and a longer tail",
+    )
+    mo.hstack([_chart, _table], justify="start", align="center", gap=2)
     return
 
 
