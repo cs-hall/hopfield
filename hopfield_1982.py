@@ -11,7 +11,7 @@
 import marimo
 
 __generated_with = "0.25.2"
-app = marimo.App(width="full")
+app = marimo.App(width="medium")
 
 
 @app.cell
@@ -873,21 +873,28 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(np):
-    def simulate(T, S0, P, n_updates, rng, U=0):
+    def simulate(T, S0, P, n_updates, rng, record_every=1, U=0):
         """Run the asynchronous rule for n_updates single-neuron updates.
 
         Keeps the input h = T @ S up to date incrementally, so each update costs
         O(N + n) rather than O(N^2). The energy changes by dE = -dV_i * h_i
         (Eq. 8) and each pattern's Hamming distance changes by +/-1 per flip.
-        Returns the energy and the distances (n_updates + 1 rows) and the final state.
+        Only every `record_every`-th update (plus the first and last) is recorded,
+        so memory stays small on long runs. Returns the recorded update numbers,
+        the energy and distances at those updates, and the final state.
         """
-        S = S0.astype(np.int64).copy()
+        S = S0.astype(np.int32).copy()
         h = T @ S
-        E = -0.5 * S @ h
+        E = -0.5 * float(S @ h)
         d = (P != S).sum(axis=1)
-        energies = np.empty(n_updates + 1)
-        dists = np.empty((n_updates + 1, len(P)), dtype=np.int64)
+        rec_t = np.unique(
+            np.r_[np.arange(0, n_updates + 1, record_every), n_updates]
+        )
+        energies = np.empty(len(rec_t))
+        dists = np.empty((len(rec_t), len(P)), dtype=np.int32)
         energies[0], dists[0] = E, d
+        r = 1
+        Pt = P.T.astype(np.int8)  # row i holds every pattern's bit i, contiguous
         for t, i in enumerate(rng.integers(len(S), size=n_updates), start=1):
             hi = h[i]
             new = 1 if hi > U else (0 if hi < U else S[i])
@@ -895,11 +902,13 @@ def _(np):
                 dv = new - S[i]
                 E -= dv * hi
                 h += dv * T[i]  # T is symmetric, so row i is column i
-                d += np.where(P[:, i] == new, -1, 1)
+                d += np.where(Pt[i] == new, -1, 1)
                 S[i] = new
-            energies[t] = E
-            dists[t] = d
-        return energies, dists, S
+            if r < len(rec_t) and t == rec_t[r]:
+                energies[r] = E
+                dists[r] = d
+                r += 1
+        return rec_t, energies, dists, S
 
     return (simulate,)
 
@@ -918,17 +927,24 @@ def _(
     sim_N = sim_neurons.value
     sim_P = sim_rng.integers(0, 2, (sim_patterns.value, sim_N))
     sim_X = 2 * sim_P - 1
-    sim_T = sim_X.T @ sim_X
+    sim_T = (sim_X.T @ sim_X).astype(np.int32)
     np.fill_diagonal(sim_T, 0)
 
     # Cue: pattern 1 with some bits flipped
     sim_cue = sim_P[0].copy()
     sim_cue[sim_rng.choice(sim_N, min(sim_flips.value, sim_N), replace=False)] ^= 1
 
-    sim_energy, sim_dist, sim_final = simulate(
-        sim_T, sim_cue, sim_P, sim_duration.value * sim_N, sim_rng
+    # Record ~500 points per trace; that is all the charts draw
+    _n_updates = sim_duration.value * sim_N
+    sim_t, sim_energy, sim_dist, sim_final = simulate(
+        sim_T,
+        sim_cue,
+        sim_P,
+        _n_updates,
+        sim_rng,
+        record_every=max(1, _n_updates // 500),
     )
-    return sim_N, sim_P, sim_T, sim_dist, sim_energy, sim_final
+    return sim_N, sim_P, sim_T, sim_dist, sim_energy, sim_final, sim_t
 
 
 @app.cell(hide_code=True)
@@ -945,16 +961,14 @@ def _(
     sim_dist,
     sim_energy,
     sim_final,
+    sim_t,
 ):
-    # Thin to ~500 time points per line so the charts stay light
-    _stride = max(1, len(sim_energy) // 500)
-    _idx = np.r_[np.arange(0, len(sim_energy), _stride), len(sim_energy) - 1]
+    # simulate() already recorded only ~500 time points per trace
+    _idx = sim_t
     _time = _idx / sim_N
     _x = alt.X("time:Q", title="time (units of 1/W)")
 
-    sim_energy_df = pd.DataFrame(
-        {"time": _time, "update": _idx, "E": sim_energy[_idx]}
-    )
+    sim_energy_df = pd.DataFrame({"time": _time, "update": _idx, "E": sim_energy})
     sim_energy_chart = (
         alt.Chart(sim_energy_df)
         .mark_line(strokeWidth=2, interpolate="step-after", color=POS)
@@ -973,7 +987,7 @@ def _(
             "time": np.repeat(_time, _n),
             "update": np.repeat(_idx, _n),
             "pattern": np.tile(np.arange(1, _n + 1), len(_idx)),
-            "distance": sim_dist[_idx].ravel(),
+            "distance": sim_dist.ravel(),
         }
     )
     sim_dist_df["kind"] = np.where(
@@ -1067,23 +1081,40 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(np):
-    def settle(T, S0, rng, max_sweeps=50, U=0):
-        """Run the asynchronous rule until no neuron would change (checked after
-        every N updates). Gives up after max_sweeps * N updates. Returns the
-        final state and whether it is stable."""
-        S = S0.astype(np.int64).copy()
-        n = len(S)
-        h = T @ S
+    def settle(Ts, S0, rng, max_sweeps=50, U=0):
+        """Run the asynchronous rule on many independent networks at once.
+
+        S0 has shape (M, k, N): k starting states for each of the M connection
+        matrices in Ts (shape (M, N, N)). Every network still updates one random
+        neuron at a time; the networks just advance in lockstep so numpy can do
+        the work. A network stops once no neuron would change (checked after
+        every N updates), or after max_sweeps * N updates. Returns the final
+        states, shape (M * k, N), and whether each one is stable.
+        """
+        M, k, N = S0.shape
+        H = (S0 @ Ts).reshape(M * k, N)  # T is symmetric, so S T is every input
+        S = S0.reshape(M * k, N).astype(np.int32)
+        mat = np.repeat(np.arange(M), k)  # which matrix each network uses
+        live = np.arange(M * k)  # networks not yet known to be stable
         for _ in range(max_sweeps):
-            for i in rng.integers(n, size=n):
-                hi = h[i]
-                new = 1 if hi > U else (0 if hi < U else S[i])
-                if new != S[i]:
-                    h += (new - S[i]) * T[i]
-                    S[i] = new
-            if not (((h > U) & (S == 0)) | ((h < U) & (S == 1))).any():
-                return S, True
-        return S, False
+            for i in rng.integers(N, size=(N, len(live))):
+                hi = H[live, i]
+                s = S[live, i]
+                new = np.where(hi > U, 1, np.where(hi < U, 0, s))
+                ch = np.nonzero(new != s)[0]
+                if ch.size:
+                    b = live[ch]
+                    H[b] += (new[ch] - s[ch])[:, None] * Ts[mat[b], i[ch]]
+                    S[b, i[ch]] = new[ch]
+            Hl, Sl = H[live], S[live]
+            live = live[
+                (((Hl > U) & (Sl == 0)) | ((Hl < U) & (Sl == 1))).any(axis=1)
+            ]
+            if not live.size:
+                break
+        stable = np.ones(M * k, dtype=bool)
+        stable[live] = False
+        return S, stable
 
     return (settle,)
 
@@ -1094,19 +1125,24 @@ def _(fig2_matrices, fig2_neurons, fig2_patterns, fig2_resample, np, settle):
     fig2_ns = [int(v) for v in fig2_patterns.value.replace(",", " ").split()]
     fig2_rng = np.random.default_rng(1982 + fig2_resample.value)
 
+    # Matrices settled per batch, keeping the stack of T's to ~16 MB
+    _chunk = max(1, 4_000_000 // fig2_N**2)
+
     # For each n: the error count of every memory, and how many never settled
     fig2_errors, fig2_unsettled = {}, {}
     for _n in fig2_ns:
         _errs, _bad = [], 0
-        for _ in range(fig2_matrices.value):
-            _P = fig2_rng.integers(0, 2, (_n, fig2_N))
-            _T = (2 * _P - 1).T @ (2 * _P - 1)
-            np.fill_diagonal(_T, 0)
-            for _mem in _P:
-                _final, _ok = settle(_T, _mem, fig2_rng)
-                _errs.append(int((_final != _mem).sum()))
-                _bad += not _ok
-        fig2_errors[_n] = np.array(_errs)
+        for _start in range(0, fig2_matrices.value, _chunk):
+            _M = min(_chunk, fig2_matrices.value - _start)
+            _P = fig2_rng.integers(0, 2, (_M, _n, fig2_N)).astype(np.int32)
+            _X = 2 * _P - 1
+            _Ts = _X.transpose(0, 2, 1) @ _X
+            _Ts[:, np.arange(fig2_N), np.arange(fig2_N)] = 0
+            # Start every network exactly at one of its own stored memories
+            _final, _ok = settle(_Ts, _P, fig2_rng)
+            _errs.append((_final != _P.reshape(-1, fig2_N)).sum(axis=1))
+            _bad += int((~_ok).sum())
+        fig2_errors[_n] = np.concatenate(_errs)
         fig2_unsettled[_n] = _bad
     return fig2_N, fig2_errors, fig2_unsettled
 
@@ -1237,16 +1273,15 @@ def _(np):
     # memory's neighbourhood. N = 100, n = 10 as in the paper's example.
     _rng = np.random.default_rng(10)
     counter_N, counter_n = 100, 10
-    _bad = []
-    for _ in range(2000):
-        _P = _rng.integers(0, 2, (counter_n, counter_N))
-        _T = (2 * _P - 1).T @ (2 * _P - 1)
-        np.fill_diagonal(_T, 0)
-        _H = _P @ _T  # input to every bit of every stored memory (T is symmetric)
-        _bad.append(((_H > 0) & (_P == 0)) | ((_H < 0) & (_P == 1)))
-    counter_unstable = np.concatenate(
-        _bad
-    )  # one row per memory, one column per bit
+    _P = _rng.integers(0, 2, (2000, counter_n, counter_N)).astype(np.int32)
+    _X = 2 * _P - 1
+    # Input to every bit of every stored memory, without forming T:
+    # P T = (P X^T) X - n P, because T = X^T X with its diagonal (all n) zeroed
+    _H = (_P @ _X.transpose(0, 2, 1)) @ _X - counter_n * _P
+    # One row per memory, one column per bit
+    counter_unstable = (((_H > 0) & (_P == 0)) | ((_H < 0) & (_P == 1))).reshape(
+        -1, counter_N
+    )
     counter_p_bit = counter_unstable.mean()
 
     # Real memories keep their own N bits together
