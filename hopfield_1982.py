@@ -458,11 +458,17 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def _(mo, np):
     get_net, set_net = mo.state(
-        {"cue": None, "state": None, "t": 0, "last": None, "history": None}
+        {"state": None, "t": 0, "last": None, "history": None}
     )
-    return get_net, set_net
+
+    def fresh_run(s):
+        """Run state starting (t = 0) from pattern s."""
+        s = np.asarray(s, dtype=int)
+        return {"state": s, "t": 0, "last": None, "history": s[None, :]}
+
+    return fresh_run, get_net, set_net
 
 
 @app.cell
@@ -490,29 +496,27 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(N, fresh_run, mo, np, set_net):
     random_button = mo.ui.button(
-        label="Random pattern", value=0, on_click=lambda v: v + 1
+        label="Random pattern",
+        on_click=lambda _: set_net(
+            fresh_run(np.random.default_rng().integers(0, 2, N))
+        ),
     )
     return (random_button,)
 
 
 @app.cell
-def _(N, mo, np, random_button):
-    start = np.random.default_rng(1982 + random_button.value).integers(0, 2, N)
+def _(S, fresh_run, mo, set_net):
     neuron_boxes = mo.ui.array(
-        [
-            mo.ui.checkbox(value=bool(b), label=str(k + 1))
-            for k, b in enumerate(start)
-        ]
+        [mo.ui.checkbox(value=bool(b), label=str(k + 1)) for k, b in enumerate(S)],
+        on_change=lambda v: set_net(fresh_run(v)),
     )
     return (neuron_boxes,)
 
 
 @app.cell
-def _(N, clip_level, get_stored, neuron_boxes, np):
-    V = np.array(neuron_boxes.value, dtype=int)
-
+def _(N, clip_level, get_stored, np):
     # Patterns stored at a different network size are kept but ignored here
     P = np.array([p for p in get_stored() if len(p) == N], dtype=int).reshape(-1, N)
 
@@ -525,7 +529,7 @@ def _(N, clip_level, get_stored, neuron_boxes, np):
         if clip_level.value:
             T = np.clip(T, -clip_level.value, clip_level.value)
     np.fill_diagonal(T, 0)
-    return P, T, V
+    return P, T
 
 
 @app.cell(hide_code=True)
@@ -557,23 +561,24 @@ def _(np):
 
 
 @app.cell(hide_code=True)
-def _(N, V, get_net):
+def _(N, get_net, np):
     net = get_net()
-    if net["cue"] == tuple(V) and len(net["state"]) == N:
+    if net["state"] is not None and len(net["state"]) == N:
         S, t_updates, last_update = net["state"], net["t"], net["last"]
         history = net["history"]
     else:
-        S, t_updates, last_update = V, 0, None
-        history = V[None, :]
+        # First load, or the network size changed: start from a default pattern
+        S = np.random.default_rng(1982).integers(0, 2, N)
+        t_updates, last_update, history = 0, None, S[None, :]
     return S, history, last_update, t_updates
 
 
 @app.cell
-def _(V, mo, set_stored):
+def _(S, mo, set_stored):
     store_button = mo.ui.button(
         label="Store pattern",
         kind="success",
-        on_click=lambda _: set_stored(lambda s: s + [V.copy()]),
+        on_click=lambda _: set_stored(lambda s: s + [S.copy()]),
     )
     clear_button = mo.ui.button(
         label="Clear T", kind="danger", on_click=lambda _: set_stored([])
@@ -621,8 +626,8 @@ def _(
     N,
     S,
     T,
-    V,
     dyn_rng,
+    fresh_run,
     history,
     last_update,
     mo,
@@ -635,7 +640,6 @@ def _(
         new_S, last, trail = update_neurons(S, T, k, dyn_rng)
         set_net(
             {
-                "cue": tuple(V),
                 "state": new_S,
                 "t": t_updates + k,
                 "last": last,
@@ -650,10 +654,8 @@ def _(
         label=f"Update {N} neurons (\u2248 1/W)", on_click=lambda _: _advance(N)
     )
     reset_button = mo.ui.button(
-        label="Reset to cue",
-        on_click=lambda _: set_net(
-            {"cue": None, "state": None, "t": 0, "last": None, "history": None}
-        ),
+        label="Reset to start",
+        on_click=lambda _: set_net(fresh_run(history[0])),
     )
 
     # A state is stable when no neuron's input disagrees with its current value
@@ -710,7 +712,7 @@ def _(
 
     pattern_controls = mo.vstack(
         [
-            mo.md("**Cue / pattern to store**"),
+            mo.md("**Network state** (tick to edit; follows the updates)"),
             neuron_boxes.hstack(gap=0.75, justify="start")
             if show_detail
             else mo.md(""),
