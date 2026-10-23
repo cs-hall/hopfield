@@ -1,0 +1,52 @@
+name: Deploy notebook to GitHub Pages
+
+# Export the marimo notebook as a WebAssembly site and publish it whenever
+# the notebook (or this workflow) changes on master.
+on:
+  push:
+    branches: [master]
+    paths:
+      - hopfield_1982.py
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; a newer push replaces a queued one
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Export notebook to WebAssembly HTML
+        run: >
+          uvx marimo==0.25.2 export html-wasm hopfield_1982.py
+          --output _site --mode run --no-sandbox
+
+      # marimo copies an AI-assistant prompt file in with its assets; the page doesn't use it
+      - name: Remove files the site doesn't need
+        run: rm -f _site/CLAUDE.md
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
